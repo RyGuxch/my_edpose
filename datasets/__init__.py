@@ -9,6 +9,11 @@ def get_coco_api_from_dataset(dataset):
             dataset = dataset.dataset
     if isinstance(dataset, torchvision.datasets.CocoDetection):
         return dataset.coco
+    # Support custom datasets that expose the COCO api via a `coco` attribute
+    if hasattr(dataset, "coco"):
+        return dataset.coco
+
+    return None
 
 
 def build_dataset(image_set, args):
