@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "Python Debugger: Python File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "python": "/home/rxu/anaconda3/envs/ed_pose/bin/python",
+            "args": [
+                "--output_dir", "logs/coco",
+                "-c", "config/edpose.cfg.py",
+                "--options", "batch_size=2", "epochs=60", "lr_drop=55", "num_body_points=21", "backbone=resnet50",
+                "--dataset_file", "coco"
+            ]
+        }
+    ]
+}
