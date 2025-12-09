@@ -11,12 +11,29 @@ from util.misc import all_gather
 class CocoEvaluator(object):
     def __init__(self, coco_gt, iou_types, useCats=True):
         assert isinstance(iou_types, (list, tuple))
-        COCO_PATH = os.environ.get("EDPOSE_COCO_PATH")
-        cocodir = COCO_PATH + '/annotations/person_keypoints_val2017.json'
-        coco_gt = COCO(cocodir)
-        self.coco_gt = coco_gt
 
         self.iou_types = iou_types
+        requires_keypoints_gt = "keypoints" in self.iou_types
+
+        if coco_gt is None:
+            missing_gt_msg = (
+                "Keypoint evaluation requires a COCO ground-truth handle (or dataset with a 'coco' attribute); "
+                "received None."
+            )
+            raise ValueError(missing_gt_msg if requires_keypoints_gt else missing_gt_msg.replace("Keypoint evaluation", "Evaluation"))
+
+        expected_num_kpts = getattr(coco_gt, "num_body_points", None)
+
+        if isinstance(coco_gt, COCO):
+            self.coco_gt = coco_gt
+        elif hasattr(coco_gt, "coco") and isinstance(coco_gt.coco, COCO):
+            self.coco_gt = coco_gt.coco
+            expected_num_kpts = getattr(coco_gt, "num_body_points", expected_num_kpts)
+        else:
+            raise TypeError(
+                "coco_gt must be a pycocotools COCO instance or expose a 'coco' attribute containing one."
+            )
+
         self.coco_eval = {}
         # 记录 GT 的类别 id 列表 & 关键点数量
         self.cat_ids = sorted(self.coco_gt.getCatIds())
@@ -26,6 +43,12 @@ class CocoEvaluator(object):
             self.num_kpts = len(cats[0]['keypoints'])
         else:
             self.num_kpts = 0
+
+        if expected_num_kpts is not None and 'keypoints' in self.iou_types:
+            if self.num_kpts != expected_num_kpts:
+                raise ValueError(
+                    f"Keypoint category count ({self.num_kpts}) does not match expected num_body_points ({expected_num_kpts})."
+                )
         
         print(f"in coco_eval, num_keypoints={self.num_kpts}")
 
