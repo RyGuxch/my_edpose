@@ -11,15 +11,22 @@ from util.misc import all_gather
 class CocoEvaluator(object):
     def __init__(self, coco_gt, iou_types, useCats=True):
         assert isinstance(iou_types, (list, tuple))
-        COCO_PATH = os.environ.get("EDPOSE_COCO_PATH")
-        cocodir = COCO_PATH + '/annotations/person_keypoints_val2017.json'
-        coco_gt = COCO(cocodir)
+        # Prefer the COCO API object provided by the dataset; fall back to the
+        # original behaviour only when it's missing (e.g., for pure inference
+        # without ground truth).
+        if coco_gt is None:
+            COCO_PATH = os.environ.get("EDPOSE_COCO_PATH")
+            cocodir = COCO_PATH + '/annotations/person_keypoints_val2017.json'
+            coco_gt = COCO(cocodir)
         self.coco_gt = coco_gt
 
         self.iou_types = iou_types
         self.coco_eval = {}
         # 记录 GT 的类别 id 列表 & 关键点数量
         self.cat_ids = sorted(self.coco_gt.getCatIds())
+        # Map zero-based model labels to dataset category ids when needed
+        self._cat_id_set = set(self.cat_ids)
+        self._label_to_cat = {idx: cat_id for idx, cat_id in enumerate(self.cat_ids)}
 
         cats = self.coco_gt.loadCats(self.cat_ids)
         if len(cats) > 0 and 'keypoints' in cats[0]:
@@ -52,6 +59,18 @@ class CocoEvaluator(object):
         self.eval_imgs = {k: [] for k in iou_types}
         self.useCats = useCats
 
+    def _map_label(self, label):
+        """Convert model label to dataset category id when they are zero-based.
+
+        If the incoming label already matches a dataset category id, keep it; otherwise
+        try zero-based indexing fallback.
+        """
+        if label in self._cat_id_set:
+            return int(label)
+        if label in self._label_to_cat:
+            return int(self._label_to_cat[label])
+        return int(label)
+
     def prepare_for_coco_keypoint(self, predictions):
         coco_results = []
         for original_id, prediction in predictions.items():
@@ -59,7 +78,7 @@ class CocoEvaluator(object):
                 continue
 
             scores = prediction["scores"].tolist()
-            labels = prediction["labels"].tolist()
+            labels = [self._map_label(l) for l in prediction["labels"].tolist()]
             keypoints = prediction["keypoints"]
             keypoints = keypoints.flatten(start_dim=1).tolist()
 
@@ -136,7 +155,8 @@ class CocoEvaluator(object):
             else:
                 labels = prediction["labels"]
 
-        
+            labels = [self._map_label(l) for l in labels]
+
             try:
                 coco_results.extend(
                     [
@@ -166,7 +186,7 @@ class CocoEvaluator(object):
             masks = masks > 0.5
 
             scores = prediction["scores"].tolist()
-            labels = prediction["labels"].tolist()
+            labels = [self._map_label(l) for l in prediction["labels"].tolist()]
 
             rles = [
                 mask_util.encode(np.array(mask[0, :, :, np.newaxis], dtype=np.uint8, order="F"))[0]
@@ -187,31 +207,6 @@ class CocoEvaluator(object):
                 ]
             )
         return coco_results
-
-    def prepare_for_coco_keypoint(self, predictions):
-        coco_results = []
-        for original_id, prediction in predictions.items():
-            if len(prediction) == 0:
-                continue
-
-            scores = prediction["scores"].tolist()
-            labels = prediction["labels"].tolist()
-            keypoints = prediction["keypoints"]
-            keypoints = keypoints.flatten(start_dim=1).tolist()
-
-            coco_results.extend(
-                [
-                    {
-                        "image_id": original_id,
-                        "category_id": labels[k],
-                        'keypoints': keypoint,
-                        "score": scores[k],
-                    }
-                    for k, keypoint in enumerate(keypoints)
-                ]
-            )
-        return coco_results
-
 
 def convert_to_xywh(boxes):
     xmin, ymin, xmax, ymax = boxes.unbind(1)
