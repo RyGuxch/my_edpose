@@ -42,12 +42,11 @@ def crop(image, target, region):
     if "keypoints" in target:
         max_size = torch.as_tensor([w, h], dtype=torch.float32)
         keypoints = target["keypoints"]
-        num_inst, num_kpts, _ = keypoints.shape
         cropped_keypoints = keypoints.view(-1, 3)[:,:2] - torch.as_tensor([j, i])
         cropped_keypoints = torch.min(cropped_keypoints, max_size)
         cropped_keypoints = cropped_keypoints.clamp(min=0)
         cropped_keypoints = torch.cat([cropped_keypoints, keypoints.view(-1, 3)[:,2].unsqueeze(1)], dim=1)
-        target["keypoints"] = cropped_keypoints.view(target["keypoints"].shape[0], num_kpts, 3)
+        target["keypoints"] = cropped_keypoints.view(target["keypoints"].shape[0], 17, 3)
     return cropped_image, target
 
 
@@ -276,12 +275,13 @@ class Normalize(object):
 
         if "keypoints" in target:
             keypoints = target["keypoints"]
-            N, K, _ = keypoints.shape
+            num_kpts = keypoints.shape[1]
+            # print(f"[Debug] in transform_coco, num_kots={num_kpts}")
             V = keypoints[:, :, 2]
             V[V == 2] = 1
             Z=keypoints[:, :, :2]
-            Z = Z.contiguous().view(-1, 2 * K)
-            Z = Z / torch.tensor([w, h] * K, dtype=torch.float32)
+            Z = Z.contiguous().view(-1, 2 * num_kpts)
+            Z = Z / torch.tensor([w, h] * num_kpts, dtype=torch.float32)
             all_keypoints = torch.cat([Z, V], dim=1)
             target["keypoints"] = all_keypoints
         return image, target

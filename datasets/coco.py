@@ -20,13 +20,12 @@ from datasets.data_util import preparing_dataset
 __all__ = ['build']
 
 class CocoDetection(torch.utils.data.Dataset):
-    def __init__(self, root_path, image_set, transforms, return_masks):
+    def __init__(self, root_path, image_set, transforms, return_masks, num_keypoints=21):
         super(CocoDetection, self).__init__()
-
+        self._transforms = transforms
+        self.prepare = ConvertCocoPolysToMask(return_masks, num_keypoints=num_keypoints)
         self.Inference_Path = None
 
-        self._transforms = transforms
-        self.prepare = ConvertCocoPolysToMask(return_masks)
         if image_set == "train":
             self.img_folder = root_path / "images/train2017"
             self.coco = COCO(root_path / "annotations/person_keypoints_train2017.json")
@@ -101,7 +100,8 @@ def convert_coco_poly_to_mask(segmentations, height, width):
 
 
 class ConvertCocoPolysToMask(object):
-    def __init__(self, return_masks=False):
+    def __init__(self, return_masks=False, num_keypoints=None):
+        self.num_keypoints=num_keypoints
         self.return_masks = return_masks
 
     def __call__(self, image, target):
@@ -116,18 +116,9 @@ class ConvertCocoPolysToMask(object):
         anno = target["annotations"]
         anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
         anno = [obj for obj in anno if obj['num_keypoints'] != 0]
-        keypoints_list = [obj["keypoints"] for obj in anno]
+        keypoints = [obj["keypoints"] for obj in anno]
         boxes = [obj["bbox"] for obj in anno]
-        if len(keypoints_list) > 0:
-            # 每个点是 (x, y, v)，所以用长度 / 3 推出关键点数量
-            num_kpts = len(keypoints_list[0]) // 3
-            keypoints = torch.as_tensor(keypoints_list, dtype=torch.float32).reshape(-1, num_kpts, 3)
-        else:
-            # 没有关键点（例如 inference 的情况），给一个空 tensor 就行
-            keypoints = torch.zeros((0, 0, 3), dtype=torch.float32)
-        # keypoints = [obj["keypoints"] for obj in anno]
-        # boxes = [obj["bbox"] for obj in anno]
-        # # keypoints = torch.as_tensor(keypoints, dtype=torch.float32).reshape(-1, 17, 3)
+        keypoints = torch.as_tensor(keypoints, dtype=torch.float32).reshape(-1, self.num_keypoints, 3)
         # guard against no boxes via resizing
         boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
         boxes[:, 2:] += boxes[:, :2]
@@ -163,11 +154,9 @@ class ConvertCocoPolysToMask(object):
 
 
 def make_coco_transforms(image_set, fix_size=False, strong_aug=False, args=None):
-    # 这里的 T 是 transforms_coco.py 里定义的封装（Compose/ToTensor/Normalize 等）
     normalize = T.Compose([
         T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406],
-                    [0.229, 0.224, 0.225])
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
     # config the params for data aug
@@ -176,87 +165,67 @@ def make_coco_transforms(image_set, fix_size=False, strong_aug=False, args=None)
     scales2_resize = [400, 500, 600]
     scales2_crop = [384, 600]
 
-    # update args from config files（如果 config 里有就用 config 里的）
+    # update args from config files
     scales = getattr(args, 'data_aug_scales', scales)
     max_size = getattr(args, 'data_aug_max_size', max_size)
     scales2_resize = getattr(args, 'data_aug_scales2_resize', scales2_resize)
     scales2_crop = getattr(args, 'data_aug_scales2_crop', scales2_crop)
 
-    # 是否关闭所有数据增强：在过拟合实验的 config 里加 no_aug = True 即可
-    no_aug = getattr(args, 'no_aug', False) if args is not None else False
-
-    # resize them (可选整体缩放)
-    data_aug_scale_overlap = getattr(args, 'data_aug_scale_overlap', None) if args is not None else None
+    # resize them
+    data_aug_scale_overlap = getattr(args, 'data_aug_scale_overlap', None)
     if data_aug_scale_overlap is not None and data_aug_scale_overlap > 0:
         data_aug_scale_overlap = float(data_aug_scale_overlap)
         scales = [int(i * data_aug_scale_overlap) for i in scales]
         max_size = int(max_size * data_aug_scale_overlap)
         scales2_resize = [int(i * data_aug_scale_overlap) for i in scales2_resize]
         scales2_crop = [int(i * data_aug_scale_overlap) for i in scales2_crop]
-
     datadict_for_print = {
         'scales': scales,
         'max_size': max_size,
         'scales2_resize': scales2_resize,
         'scales2_crop': scales2_crop
     }
-    # 你如果有 logger，可以把 datadict_for_print 打出来检查
+    return T.Compose([
+        T.ResizeDebug(max(scales)),
+        normalize,
+    ])
+    # if image_set == 'train':
+    #     if fix_size:
+    #         return T.Compose([
+    #             T.RandomHorizontalFlip(),
+    #             T.RandomResize([(max_size, max(scales))]),
+    #             normalize,
+    #         ])
 
-    # =========================
-    # 过拟合实验：完全关闭所有随机增强
-    # =========================
-    if no_aug:
-        # 训练 / 验证 / 测试统一：固定 resize + ToTensor + Normalize
-        # 这里用 ResizeDebug(max(scales)) 等价于“把短边缩放到 max(scales)”
-        if image_set in ['train', 'val', 'test']:
-            return T.Compose([
-                T.ResizeDebug(max(scales)),  # 固定尺度，无随机
-                normalize,                   # 内含 ToTensor + Normalize
-            ])
-        raise ValueError(f'unknown {image_set}')
+    #     return T.Compose([
+    #         T.RandomHorizontalFlip(),
+    #         T.RandomSelect(
+    #             T.RandomResize(scales, max_size=max_size),
+    #             T.Compose([
+    #                 T.RandomResize(scales2_resize),
+    #                 T.RandomSizeCrop(*scales2_crop),
+    #                 T.RandomResize(scales, max_size=max_size),
+    #             ])
+    #         ),
+    #         normalize,
+    #     ])
 
-    # =========================
-    # 正常训练：保留原来的数据增强
-    # =========================
-    if image_set == 'train':
-        if fix_size:
-            # 固定尺度训练（仍然有 RandomHorizontalFlip）
-            return T.Compose([
-                T.RandomHorizontalFlip(),
-                T.RandomResize([(max_size, max(scales))]),
-                normalize,
-            ])
+    # if image_set in ['val', 'test']:
 
-        # 默认：随机翻转 + 两条随机 resize/crop 分支（二选一）
-        return T.Compose([
-            T.RandomHorizontalFlip(),
-            T.RandomSelect(
-                T.RandomResize(scales, max_size=max_size),
-                T.Compose([
-                    T.RandomResize(scales2_resize),
-                    T.RandomSizeCrop(*scales2_crop),
-                    T.RandomResize(scales, max_size=max_size),
-                ])
-            ),
-            normalize,
-        ])
 
-    # =========================
-    # 验证 / 测试：只做尺度归一化 + Normalize（无随机）
-    # =========================
-    if image_set in ['val', 'test']:
-        return T.Compose([
-            T.RandomResize([max(scales)], max_size=max_size),
-            normalize,
-        ])
+    #     return T.Compose([
+    #         T.RandomResize([max(scales)], max_size=max_size),
+    #         normalize,
+    #     ])
 
     raise ValueError(f'unknown {image_set}')
 
 
 def build(image_set, args):
     root = Path(args.coco_path)
+    num_kpts = getattr(args, 'num_body_points', 21)
     dataset = CocoDetection(root, image_set, transforms=make_coco_transforms(image_set, strong_aug=args.strong_aug),
-                            return_masks=args.masks)
+                            return_masks=args.masks, num_keypoints=num_kpts)
 
     return dataset
 
