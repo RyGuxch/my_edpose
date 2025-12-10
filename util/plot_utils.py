@@ -8,6 +8,23 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path, PurePath
 
+
+def _to_scalar(value):
+    if isinstance(value, (list, tuple, np.ndarray)):
+        if len(value) == 0:
+            return np.nan
+        return value[0]
+    return value
+
+
+def _ensure_numeric_columns(df: pd.DataFrame, columns):
+    processed = df.copy()
+    for col in columns:
+        if col in processed.columns:
+            processed[col] = pd.to_numeric(processed[col].apply(_to_scalar), errors='coerce')
+    return processed
+
+
 def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col=0, log_name='log.txt'):
     '''
     Function to plot specific fields from training log(s). Plots both training and test results.
@@ -57,7 +74,8 @@ def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col
                 ).ewm(com=ewm_col).mean()
                 axs[j].plot(coco_eval, c=color)
             else:
-                df.interpolate().ewm(com=ewm_col).mean().plot(
+                processed = _ensure_numeric_columns(df, [f'train_{field}', f'test_{field}'])
+                processed.interpolate().ewm(com=ewm_col).mean().plot(
                     y=[f'train_{field}', f'test_{field}'],
                     ax=axs[j],
                     color=[color] * 2,
