@@ -8,6 +8,44 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path, PurePath
 
+
+def _to_scalar(value):
+    if isinstance(value, (list, tuple, np.ndarray)):
+        if len(value) == 0:
+            return np.nan
+        return value[0]
+    return value
+
+
+def _ensure_numeric_columns(df: pd.DataFrame, columns):
+    processed = df.copy()
+    for col in columns:
+        if col in processed.columns:
+            processed[col] = pd.to_numeric(processed[col].apply(_to_scalar), errors='coerce')
+    return processed
+
+
+def _resolve_columns(field):
+    """Return train/test column names for a requested field.
+
+    Users may pass either bare metric names (e.g., ``loss_bbox_unscaled``)
+    or already-prefixed names such as ``train_loss_bbox_unscaled``. This
+    helper normalizes the requested field into train/test column names so the
+    plotting code can consistently locate the appropriate series.
+    """
+
+    train_prefix = "train_"
+    test_prefix = "test_"
+
+    if field.startswith(train_prefix):
+        base = field[len(train_prefix):]
+        return field, f"{test_prefix}{base}"
+    if field.startswith(test_prefix):
+        base = field[len(test_prefix):]
+        return f"{train_prefix}{base}", field
+    return f"{train_prefix}{field}", f"{test_prefix}{field}"
+
+
 def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col=0, log_name='log.txt'):
     '''
     Function to plot specific fields from training log(s). Plots both training and test results.
@@ -57,18 +95,33 @@ def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col
                 ).ewm(com=ewm_col).mean()
                 axs[j].plot(coco_eval, c=color)
             else:
-                df.interpolate().ewm(com=ewm_col).mean().plot(
-                    y=[f'train_{field}', f'test_{field}'],
+                train_col, test_col = _resolve_columns(field)
+                processed = _ensure_numeric_columns(df, [train_col, test_col])
+                plot_cols = [c for c in (train_col, test_col) if c in processed.columns]
+                if not plot_cols:
+                    continue
+                processed = processed[plot_cols]
+                processed.interpolate().ewm(com=ewm_col).mean().plot(
+                    y=plot_cols,
                     ax=axs[j],
-                    color=[color] * 2,
-                    style=['-', '--']
+                    color=[color] * len(plot_cols),
+                    style=['-', '--'][: len(plot_cols)]
                 )
     for ax, field in zip(axs, fields):
         if field == 'mAP':
             ax.legend([Path(p).name for p in logs])
             ax.set_title(field)
         else:
-            ax.legend([f'train', f'test'])
+            handles, labels = ax.get_legend_handles_labels()
+            mapped_labels = []
+            for label in labels:
+                if label.startswith('train_'):
+                    mapped_labels.append('train')
+                elif label.startswith('test_'):
+                    mapped_labels.append('test')
+                else:
+                    mapped_labels.append(label)
+            ax.legend(handles, mapped_labels)
             ax.set_title(field)
 
     return fig, axs
